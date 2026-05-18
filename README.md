@@ -10,6 +10,7 @@ A [pi](https://github.com/badlogic/pi-mono) extension that adds [CrofAI](https:/
 - **Tool use** - Function calling support
 - **Streaming** - Real-time token streaming
 - **Free tier** - Some models available at no cost (GLM 4.7 Flash, Qwen3.5 9B)
+- **Usage status bar** — Displays your remaining credits and daily request count in the pi footer, updated live across sessions
 
 ## Available Models
 
@@ -133,6 +134,19 @@ For reasoning models, control thinking depth:
 ```
 
 Values: `none`, `low`, `medium`, `high`
+
+## Usage Status Bar
+
+Once authenticated, the pi footer shows your CrofAI account status:
+
+```
+$12.35 | ⇄ 450
+```
+
+- **`$X.XX`** — Remaining credit balance (hidden when $0)
+- **`⇄ N`** — Daily requests remaining (hidden when not on a subscription plan)
+
+The count is fetched from CrofAI's [usage API](https://crof.ai/usage_api/) on session start and after each user prompt. Between syncs, the request count is decremented locally per turn to avoid unnecessary API calls.
 
 ## API Compatibility
 
