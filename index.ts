@@ -315,6 +315,11 @@ function formatCredits(credits: number): string {
 }
 
 function updateUsageStatus(ctx: any): void {
+  // Never show usage footer when not on a CrofAI model
+  if (ctx.model?.provider !== "crofai") {
+    ctx.ui.setStatus("crofai-usage", undefined);
+    return;
+  }
   if (sessionCredits == null && sessionRequests == null) {
     ctx.ui.setStatus("crofai-usage", undefined);
     return;
