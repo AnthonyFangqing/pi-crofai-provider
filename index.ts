@@ -321,6 +321,12 @@ function updateUsageStatus(ctx: any): void {
   }
 }
 
+function clearUsageStatus(ctx: any): void {
+  sessionCredits = null;
+  sessionRequests = null;
+  ctx.ui.setStatus("crofai-usage", undefined);
+}
+
 // ─── Extension Entry Point ────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -337,6 +343,14 @@ export default function (pi: ExtensionAPI) {
     api: "openai-completions",
     models: staleModels,
   });
+
+  /**
+   * Check whether the active model is from the CrofAI provider.
+   * Returns true when ctx.model is available and has the matching provider.
+   */
+  function isCrofaiModel(ctx: any): boolean {
+    return ctx.model?.provider === "crofai";
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     revalidateAbort?.abort();
@@ -356,7 +370,12 @@ export default function (pi: ExtensionAPI) {
       }
     });
 
-    // Fetch fresh usage on session start
+    // Only show usage footer when using a CrofAI model
+    if (!isCrofaiModel(ctx)) {
+      clearUsageStatus(ctx);
+      return;
+    }
+
     const usage = await fetchUsage(cachedApiKey, signal);
     if (usage && !signal.aborted) {
       sessionCredits = usage.credits;
@@ -365,9 +384,22 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  pi.on("model_select", async (event, ctx) => {
+    if (event.model?.provider === "crofai") {
+      // Fetch and show usage when switching to a CrofAI model
+      const usage = await fetchUsage(cachedApiKey);
+      if (usage) {
+        sessionCredits = usage.credits;
+        sessionRequests = usage.usable_requests;
+      }
+      updateUsageStatus(ctx);
+    } else {
+      // Clear when switching away
+      clearUsageStatus(ctx);
+    }
+  });
+
   pi.on("turn_end", async (_event, ctx) => {
-    // Each turn consumes one request — decrement locally instead of
-    // hitting the API. Fresh values are synced at agent_end.
     if (sessionRequests != null) {
       sessionRequests = Math.max(0, sessionRequests - 1);
     }
@@ -375,7 +407,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    // Sync fresh usage after all turns for a user prompt complete
     const usage = await fetchUsage(cachedApiKey);
     if (usage) {
       sessionCredits = usage.credits;
