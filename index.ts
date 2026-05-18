@@ -48,6 +48,14 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
+// ─── Usage/Credits Types ──────────────────────────────────────────────────────
+
+const USAGE_API_URL = "https://crof.ai/usage_api/";
+const USAGE_FETCH_TIMEOUT_MS = 5000;
+
+let sessionRequests: number | null = null;
+let sessionCredits: number | null = null;
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface JsonModel {
@@ -254,6 +262,65 @@ async function resolveApiKey(modelRegistry: ModelRegistry): Promise<void> {
   cachedApiKey = await modelRegistry.getApiKeyForProvider("crofai") ?? undefined;
 }
 
+// ─── Usage/Credits Footer Status Bar ──────────────────────────────────────────
+
+interface Usage {
+  usable_requests: number | null;
+  credits: number;
+}
+
+async function fetchUsage(apiKey: string | undefined, signal?: AbortSignal): Promise<Usage | null> {
+  if (!apiKey) return null;
+  try {
+    const response = await fetch(USAGE_API_URL, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: signal
+        ? AbortSignal.any([AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS), signal])
+        : AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (typeof data.credits !== "number") return null;
+    return {
+      usable_requests: data.usable_requests ?? null,
+      credits: data.credits,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildUsageStatusText(usage: Usage): string | undefined {
+  const parts: string[] = [];
+  if (usage.credits != null && usage.credits > 0) {
+    parts.push(`credits: ${formatCredits(usage.credits)}`);
+  }
+  if (usage.usable_requests != null) {
+    parts.push(`requests left: ${usage.usable_requests}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : undefined;
+}
+
+function formatCredits(credits: number): string {
+  if (credits < 0.01) return `$${credits.toFixed(4)}`;
+  if (credits < 1) return `$${credits.toFixed(4)}`;
+  return `$${credits.toFixed(2)}`;
+}
+
+function updateUsageStatus(ctx: any): void {
+  if (sessionCredits == null && sessionRequests == null) {
+    ctx.ui.setStatus("crofai-usage", undefined);
+    return;
+  }
+  const text = buildUsageStatusText({
+    credits: sessionCredits ?? 0,
+    usable_requests: sessionRequests,
+  });
+  if (text) {
+    ctx.ui.setStatus("crofai-usage", ctx.ui.theme.fg("dim", text));
+  }
+}
+
 // ─── Extension Entry Point ────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -276,6 +343,8 @@ export default function (pi: ExtensionAPI) {
     revalidateAbort = new AbortController();
     const signal = revalidateAbort.signal;
     await resolveApiKey(ctx.modelRegistry);
+
+    // Background: revalidate models
     revalidateModels(cachedApiKey, embeddedModels, signal).then((freshBase) => {
       if (freshBase && !signal.aborted) {
         pi.registerProvider("crofai", {
@@ -286,6 +355,37 @@ export default function (pi: ExtensionAPI) {
         });
       }
     });
+
+    // Fetch fresh usage on session start
+    const usage = await fetchUsage(cachedApiKey, signal);
+    if (usage && !signal.aborted) {
+      sessionCredits = usage.credits;
+      sessionRequests = usage.usable_requests;
+      updateUsageStatus(ctx);
+    }
+  });
+
+  pi.on("turn_end", async (_event, ctx) => {
+    // Each turn consumes one request — decrement locally instead of
+    // hitting the API. Fresh values are synced at agent_end.
+    if (sessionRequests != null) {
+      sessionRequests = Math.max(0, sessionRequests - 1);
+    }
+    updateUsageStatus(ctx);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    // Sync fresh usage after all turns for a user prompt complete
+    const usage = await fetchUsage(cachedApiKey);
+    if (usage) {
+      sessionCredits = usage.credits;
+      sessionRequests = usage.usable_requests;
+    }
+    updateUsageStatus(ctx);
+  });
+
+  pi.on("session_tree", async (_event, ctx) => {
+    updateUsageStatus(ctx);
   });
 
   pi.on("session_shutdown", () => {
